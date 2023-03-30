@@ -24,7 +24,8 @@ import (
 	"strings"
 
 	"github.com/securego/gosec/v2"
-	"github.com/securego/gosec/v2/output"
+	"github.com/securego/gosec/v2/cmd/vflag"
+	"github.com/securego/gosec/v2/report"
 	"github.com/securego/gosec/v2/rules"
 )
 
@@ -69,13 +70,16 @@ func (a *arrayFlags) Set(value string) error {
 }
 
 var (
-	// #nosec flag
+	//#nosec flag
 	flagIgnoreNoSec = flag.Bool("nosec", false, "Ignores #nosec comments when set")
+
+	// show ignored
+	flagShowIgnored = flag.Bool("show-ignored", false, "If enabled, ignored issues are printed")
 
 	// format output
 	flagFormat = flag.String("fmt", "text", "Set output format. Valid options are: json, yaml, csv, junit-xml, html, sonarqube, golint, sarif or text")
 
-	// #nosec alternative tag
+	//#nosec alternative tag
 	flagAlternativeNoSec = flag.String("nosec-tag", "", "Set an alternative string for #nosec. Some examples: #dontanalyze, #falsepositive")
 
 	// output file
@@ -91,11 +95,13 @@ var (
 	flagRulesInclude = flag.String("include", "", "Comma separated list of rules IDs to include. (see rule list)")
 
 	// rules to explicitly exclude
-	flagRulesExclude = flag.String("exclude", "", "Comma separated list of rules IDs to exclude. (see rule list)")
+	flagRulesExclude = vflag.ValidatedFlag{}
+
+	// rules to explicitly exclude
+	flagExcludeGenerated = flag.Bool("exclude-generated", false, "Exclude generated files")
 
 	// log to file or stderr
 	flagLogfile = flag.String("log", "", "Log messages to file rather than stderr")
-
 	// sort the issues by severity
 	flagSortIssues = flag.Bool("sort", true, "Sort issues by severity")
 
@@ -117,13 +123,25 @@ var (
 	// print version and quit with exit code 0
 	flagVersion = flag.Bool("version", false, "Print version and quit with exit code 0")
 
+	// stdout the results as well as write it in the output file
+	flagStdOut = flag.Bool("stdout", false, "Stdout the results as well as write it in the output file")
+
+	// print the text report with color, this is enabled by default
+	flagColor = flag.Bool("color", true, "Prints the text format report with colorization when it goes in the stdout")
+
+	// overrides the output format when stdout the results while saving them in the output file
+	flagVerbose = flag.String("verbose", "", "Overrides the output format when stdout the results while saving them in the output file.\nValid options are: json, yaml, csv, junit-xml, html, sonarqube, golint, sarif or text")
+
+	// output suppression information for auditing purposes
+	flagTrackSuppressions = flag.Bool("track-suppressions", false, "Output suppression information, including its kind and justification")
+
 	// exlude the folders from scan
 	flagDirsExclude arrayFlags
 
 	logger *log.Logger
 )
 
-// #nosec
+//#nosec
 func usage() {
 	usageText := fmt.Sprintf(usageText, Version, GitTag, BuildDate)
 	fmt.Fprintln(os.Stderr, usageText)
@@ -132,14 +150,14 @@ func usage() {
 	fmt.Fprint(os.Stderr, "\n\nRULES:\n\n")
 
 	// sorted rule list for ease of reading
-	rl := rules.Generate()
-	keys := make([]string, 0, len(rl))
-	for key := range rl {
+	rl := rules.Generate(*flagTrackSuppressions)
+	keys := make([]string, 0, len(rl.Rules))
+	for key := range rl.Rules {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		v := rl[k]
+		v := rl.Rules[k]
 		fmt.Fprintf(os.Stderr, "\t%s: %s\n", k, v.Description)
 	}
 	fmt.Fprint(os.Stderr, "\n")
@@ -148,12 +166,12 @@ func usage() {
 func loadConfig(configFile string) (gosec.Config, error) {
 	config := gosec.NewConfig()
 	if configFile != "" {
-		// #nosec
+		//#nosec
 		file, err := os.Open(configFile)
 		if err != nil {
 			return nil, err
 		}
-		defer file.Close() // #nosec G307
+		defer file.Close() //#nosec G307
 		if _, err := config.ReadFrom(file); err != nil {
 			return nil, err
 		}
@@ -161,8 +179,19 @@ func loadConfig(configFile string) (gosec.Config, error) {
 	if *flagIgnoreNoSec {
 		config.SetGlobal(gosec.Nosec, "true")
 	}
+	if *flagShowIgnored {
+		config.SetGlobal(gosec.ShowIgnored, "true")
+	}
 	if *flagAlternativeNoSec != "" {
 		config.SetGlobal(gosec.NoSecAlternative, *flagAlternativeNoSec)
+	}
+	// set global option IncludeRules ,when flag set or global option IncludeRules  is nil
+	if v, _ := config.GetGlobal(gosec.IncludeRules); *flagRulesInclude != "" || v == "" {
+		config.SetGlobal(gosec.IncludeRules, *flagRulesInclude)
+	}
+	// set global option ExcludeRules ,when flag set or global option IncludeRules  is nil
+	if v, _ := config.GetGlobal(gosec.ExcludeRules); flagRulesExclude.String() != "" || v == "" {
+		config.SetGlobal(gosec.ExcludeRules, flagRulesExclude.String())
 	}
 	return config, nil
 }
@@ -184,40 +213,54 @@ func loadRules(include, exclude string) rules.RuleList {
 	} else {
 		logger.Println("Excluding rules: default")
 	}
-	return rules.Generate(filters...)
+	return rules.Generate(*flagTrackSuppressions, filters...)
 }
 
-func saveOutput(filename, format string, color bool, paths []string, issues []*gosec.Issue, metrics *gosec.Metrics, errors map[string][]gosec.Error) error {
-	rootPaths := []string{}
+func getRootPaths(paths []string) []string {
+	rootPaths := make([]string, 0)
 	for _, path := range paths {
 		rootPath, err := gosec.RootPath(path)
 		if err != nil {
-			return fmt.Errorf("failed to get the root path of the projects: %s", err)
+			logger.Fatal(fmt.Errorf("failed to get the root path of the projects: %w", err))
 		}
 		rootPaths = append(rootPaths, rootPath)
 	}
-	if filename != "" {
-		outfile, err := os.Create(filename)
-		if err != nil {
-			return err
-		}
-		defer outfile.Close() // #nosec G307
-		err = output.CreateReport(outfile, format, color, rootPaths, issues, metrics, errors)
-		if err != nil {
-			return err
-		}
-	} else {
-		err := output.CreateReport(os.Stdout, format, color, rootPaths, issues, metrics, errors)
-		if err != nil {
-			return err
-		}
+	return rootPaths
+}
+
+// If verbose is defined it overwrites the defined format
+// Otherwise the actual format is used
+func getPrintedFormat(format string, verbose string) string {
+	if verbose != "" {
+		return verbose
+	}
+	return format
+}
+
+func printReport(format string, color bool, rootPaths []string, reportInfo *gosec.ReportInfo) error {
+	err := report.CreateReport(os.Stdout, format, color, rootPaths, reportInfo)
+	if err != nil {
+		return err
 	}
 	return nil
 }
 
-func convertToScore(severity string) (gosec.Score, error) {
-	severity = strings.ToLower(severity)
-	switch severity {
+func saveReport(filename, format string, rootPaths []string, reportInfo *gosec.ReportInfo) error {
+	outfile, err := os.Create(filename) //#nosec G304
+	if err != nil {
+		return err
+	}
+	defer outfile.Close() //#nosec G307
+	err = report.CreateReport(outfile, format, false, rootPaths, reportInfo)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func convertToScore(value string) (gosec.Score, error) {
+	value = strings.ToLower(value)
+	switch value {
 	case "low":
 		return gosec.Low, nil
 	case "medium":
@@ -225,18 +268,22 @@ func convertToScore(severity string) (gosec.Score, error) {
 	case "high":
 		return gosec.High, nil
 	default:
-		return gosec.Low, fmt.Errorf("provided severity '%s' not valid. Valid options: low, medium, high", severity)
+		return gosec.Low, fmt.Errorf("provided value '%s' not valid. Valid options: low, medium, high", value)
 	}
 }
 
-func filterIssues(issues []*gosec.Issue, severity gosec.Score, confidence gosec.Score) []*gosec.Issue {
-	result := []*gosec.Issue{}
+func filterIssues(issues []*gosec.Issue, severity gosec.Score, confidence gosec.Score) ([]*gosec.Issue, int) {
+	result := make([]*gosec.Issue, 0)
+	trueIssues := 0
 	for _, issue := range issues {
 		if issue.Severity >= severity && issue.Confidence >= confidence {
 			result = append(result, issue)
+			if (!issue.NoSec || !*flagShowIgnored) && len(issue.Suppressions) == 0 {
+				trueIssues++
+			}
 		}
 	}
-	return result
+	return result, trueIssues
 }
 
 func main() {
@@ -257,6 +304,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nError: failed to exclude the %q directory from scan", ".git")
 	}
 
+	// set for exclude
+	flag.Var(&flagRulesExclude, "exclude", "Comma separated list of rules IDs to exclude. (see rule list)")
+
 	// Parse command line arguments
 	flag.Parse()
 
@@ -267,7 +317,7 @@ func main() {
 
 	// Ensure at least one file was specified
 	if flag.NArg() == 0 {
-		fmt.Fprintf(os.Stderr, "\nError: FILE [FILE...] or './...' expected\n") // #nosec
+		fmt.Fprintf(os.Stderr, "\nError: FILE [FILE...] or './...' expected\n") //#nosec
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -289,12 +339,6 @@ func main() {
 		logger = log.New(logWriter, "[gosec] ", log.LstdFlags)
 	}
 
-	// Color flag is allowed for text format
-	var color bool
-	if *flagFormat == "text" {
-		color = true
-	}
-
 	failSeverity, err := convertToScore(*flagSeverity)
 	if err != nil {
 		logger.Fatalf("Invalid severity value: %v", err)
@@ -312,14 +356,23 @@ func main() {
 	}
 
 	// Load enabled rule definitions
-	ruleDefinitions := loadRules(*flagRulesInclude, *flagRulesExclude)
-	if len(ruleDefinitions) == 0 {
+	excludeRules, err := config.GetGlobal(gosec.ExcludeRules)
+	if err != nil {
+		logger.Fatal(err)
+	}
+	includeRules, err := config.GetGlobal(gosec.IncludeRules)
+	if err != nil {
+		logger.Fatal(err)
+	}
+
+	ruleList := loadRules(includeRules, excludeRules)
+	if len(ruleList.Rules) == 0 {
 		logger.Fatal("No rules are configured")
 	}
 
 	// Create the analyzer
-	analyzer := gosec.NewAnalyzer(config, *flagScanTests, logger)
-	analyzer.LoadRules(ruleDefinitions.Builders())
+	analyzer := gosec.NewAnalyzer(config, *flagScanTests, *flagExcludeGenerated, *flagTrackSuppressions, logger)
+	analyzer.LoadRules(ruleList.RulesInfo())
 
 	excludedDirs := gosec.ExcludedDirsRegExp(flagDirsExclude)
 	var packages []string
@@ -352,9 +405,10 @@ func main() {
 	}
 
 	// Filter the issues by severity and confidence
-	issues = filterIssues(issues, failSeverity, failConfidence)
-	if metrics.NumFound != len(issues) {
-		metrics.NumFound = len(issues)
+	var trueIssues int
+	issues, trueIssues = filterIssues(issues, failSeverity, failConfidence)
+	if metrics.NumFound != trueIssues {
+		metrics.NumFound = trueIssues
 	}
 
 	// Exit quietly if nothing was found
@@ -363,12 +417,24 @@ func main() {
 	}
 
 	// Create output report
-	if err := saveOutput(*flagOutput, *flagFormat, color, flag.Args(), issues, metrics, errors); err != nil {
-		logger.Fatal(err)
+	rootPaths := getRootPaths(flag.Args())
+
+	reportInfo := gosec.NewReportInfo(issues, metrics, errors).WithVersion(Version)
+
+	if *flagOutput == "" || *flagStdOut {
+		fileFormat := getPrintedFormat(*flagFormat, *flagVerbose)
+		if err := printReport(fileFormat, *flagColor, rootPaths, reportInfo); err != nil {
+			logger.Fatal(err)
+		}
+	}
+	if *flagOutput != "" {
+		if err := saveReport(*flagOutput, *flagFormat, rootPaths, reportInfo); err != nil {
+			logger.Fatal(err)
+		}
 	}
 
 	// Finalize logging
-	logWriter.Close() // #nosec
+	logWriter.Close() //#nosec
 
 	// Do we have an issue? If so exit 1 unless NoFail is set
 	if (len(issues) > 0 || len(errors) > 0) && !*flagNoFail {

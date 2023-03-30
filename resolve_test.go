@@ -3,7 +3,7 @@ package gosec_test
 import (
 	"go/ast"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/securego/gosec/v2"
 	"github.com/securego/gosec/v2/testutils"
@@ -336,6 +336,5 @@ var _ = Describe("Resolve ast node to concrete value", func() {
 			Expect(value).ShouldNot(BeNil())
 			Expect(gosec.TryResolve(value, ctx)).Should(BeFalse())
 		})
-
 	})
 })

@@ -3,7 +3,7 @@ package gosec_test
 import (
 	"go/ast"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/securego/gosec/v2"
 	"github.com/securego/gosec/v2/rules"
@@ -11,7 +11,6 @@ import (
 )
 
 var _ = Describe("Issue", func() {
-
 	Context("when creating a new issue", func() {
 		It("should create a code snippet from the specified ast.Node", func() {
 			var target *ast.BasicLit
@@ -42,7 +41,7 @@ var _ = Describe("Issue", func() {
 			Expect(issue.Code).Should(MatchRegexp(`"bar"`))
 			Expect(issue.Line).Should(Equal("2"))
 			Expect(issue.Col).Should(Equal("16"))
-			Expect(issue.Cwe.ID).Should(Equal(""))
+			Expect(issue.Cwe).Should(BeNil())
 		})
 
 		It("should return an error if specific context is not able to be obtained", func() {
@@ -134,7 +133,5 @@ func main() {
 		It("should maintain the provided confidence score", func() {
 			Skip("Not implemented")
 		})
-
 	})
-
 })

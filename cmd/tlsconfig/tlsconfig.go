@@ -1,3 +1,4 @@
+//go:build go1.12
 // +build go1.12
 
 package main
@@ -65,7 +66,7 @@ type goTLSConfiguration struct {
 
 // getTLSConfFromURL retrieves the json containing the TLS configurations from the specified URL.
 func getTLSConfFromURL(url string) (*ServerSideTLSJson, error) {
-	r, err := http.Get(url) // #nosec G107
+	r, err := http.Get(url) //#nosec G107
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +188,7 @@ func main() {
 	}
 
 	outputPath := filepath.Join(dir, *outputFile)
-	if err := ioutil.WriteFile(outputPath, src, 0644); err != nil {
+	if err := ioutil.WriteFile(outputPath, src, 0o644); err != nil {
 		log.Fatalf("Writing output: %s", err)
-	} // #nosec G306
+	} //#nosec G306
 }
