@@ -26,11 +26,13 @@ import (
 	"strings"
 )
 
-type command func(args ...string)
-type utilities struct {
-	commands map[string]command
-	call     []string
-}
+type (
+	command   func(args ...string)
+	utilities struct {
+		commands map[string]command
+		call     []string
+	}
+)
 
 // Custom commands / utilities to run instead of default analyzer
 func newUtils() *utilities {
@@ -58,7 +60,6 @@ func (u *utilities) String() string {
 func (u *utilities) Set(opt string) error {
 	if _, ok := u.commands[opt]; !ok {
 		return fmt.Errorf("valid tools are: %s", u.String())
-
 	}
 	u.call = append(u.call, opt)
 	return nil
@@ -73,15 +74,13 @@ func (u *utilities) run(args ...string) {
 }
 
 func shouldSkip(path string) bool {
-	st, e := os.Stat(path)
+	st, e := os.Stat(path) // #nosec G703 -- gosecutil intentionally inspects user-supplied local file paths
 	if e != nil {
-		// #nosec
-		fmt.Fprintf(os.Stderr, "Skipping: %s - %s\n", path, e)
+		fmt.Fprintf(os.Stderr, "Skipping: %s - %s\n", path, e) //#nosec G705
 		return true
 	}
 	if st.IsDir() {
-		// #nosec
-		fmt.Fprintf(os.Stderr, "Skipping: %s - directory\n", path)
+		fmt.Fprintf(os.Stderr, "Skipping: %s - directory\n", path) //#nosec G705
 		return true
 	}
 	return false
@@ -98,12 +97,12 @@ func dumpAst(files ...string) {
 		fset := token.NewFileSet() // positions are relative to fset
 		f, err := parser.ParseFile(fset, arg, nil, 0)
 		if err != nil {
-			// #nosec
+			//#nosec
 			fmt.Fprintf(os.Stderr, "Unable to parse file %s\n", err)
 			continue
 		}
 
-		// Print the AST. #nosec
+		//#nosec -- Print the AST.
 		ast.Print(fset, f)
 	}
 }
@@ -121,7 +120,7 @@ func createContext(filename string) *context {
 	fileset := token.NewFileSet()
 	root, e := parser.ParseFile(fileset, filename, nil, parser.ParseComments)
 	if e != nil {
-		// #nosec
+		//#nosec
 		fmt.Fprintf(os.Stderr, "Unable to parse file: %s. Reason: %s\n", filename, e)
 		return nil
 	}
@@ -134,10 +133,12 @@ func createContext(filename string) *context {
 		Scopes:     make(map[ast.Node]*types.Scope),
 		Implicits:  make(map[ast.Node]types.Object),
 	}
-	config := types.Config{Importer: importer.Default()}
+	// Use ForCompiler with "source" for more reliable import resolution
+	// This reads from source files instead of relying on compiled packages
+	config := types.Config{Importer: importer.ForCompiler(fileset, "source", nil)}
 	pkg, e := config.Check("main.go", fileset, []*ast.File{root}, info)
 	if e != nil {
-		// #nosec
+		//#nosec
 		fmt.Fprintf(os.Stderr, "Type check failed for file: %s. Reason: %s\n", filename, e)
 		return nil
 	}
@@ -162,7 +163,7 @@ func printObject(obj types.Object) {
 }
 
 func checkContext(ctx *context, file string) bool {
-	// #nosec
+	//#nosec
 	if ctx == nil {
 		fmt.Fprintln(os.Stderr, "Failed to create context for file: ", file)
 		return false
@@ -171,7 +172,6 @@ func checkContext(ctx *context, file string) bool {
 }
 
 func dumpCallObj(files ...string) {
-
 	for _, file := range files {
 		if shouldSkip(file) {
 			continue
@@ -184,9 +184,9 @@ func dumpCallObj(files ...string) {
 			var obj types.Object
 			switch node := n.(type) {
 			case *ast.Ident:
-				obj = context.info.ObjectOf(node) //context.info.Uses[node]
+				obj = context.info.ObjectOf(node) // context.info.Uses[node]
 			case *ast.SelectorExpr:
-				obj = context.info.ObjectOf(node.Sel) //context.info.Uses[node.Sel]
+				obj = context.info.ObjectOf(node.Sel) // context.info.Uses[node.Sel]
 			default:
 				obj = nil
 			}
